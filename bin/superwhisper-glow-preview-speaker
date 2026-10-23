@@ -1,0 +1,372 @@
+#!/usr/bin/env python3
+"""Show Superwhisper's recording indicator on the desktop, driven by sound.
+
+Runs a throwaway indicator process and feeds it the speaker's audio, so no
+microphone is opened and no dictation is transcribed or pasted. The six waves
+come from cava's frequency bars, so they follow the music's spectrum instead of
+a single loudness level. edgeGlow shows their combined energy; pill draws the
+bars individually. The glow is drawn along the bottom of the focused monitor,
+and only while that monitor's workspace has no windows, whether or not a window
+is open anywhere else.
+
+Needs Hyprland, cava, and Superwhisper. The glows are placed by faking
+Hyprland's active window in a private user/mount namespace, so unprivileged
+user namespaces must be enabled.
+
+Usage: superwhisper-glow-preview-speaker [seconds] [edgeGlow|pill]
+                                        [--mode always|empty] [--intensity PERCENT]
+       superwhisper-glow-preview-speaker 0            # until Ctrl+C
+
+--mode empty (the default) only draws while the focused monitor's workspace is
+empty. --mode always draws on every workspace. --intensity scales the glow from
+0 (invisible) to 200 (twice as bright); the default is 100.
+"""
+import json
+import os
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+
+def usage_error(message):
+    sys.exit(f"{message}\n\nUsage: superwhisper-glow-preview-speaker"
+             " [seconds] [edgeGlow|pill] [--mode always|empty]"
+             " [--intensity PERCENT]")
+
+
+positional = []
+MODE = "empty"
+INTENSITY = 1.0
+arguments = iter(sys.argv[1:])
+for argument in arguments:
+    if argument in ("-h", "--help"):
+        print(__doc__.strip())
+        sys.exit(0)
+    if argument == "--mode":
+        next_argument = next(arguments, None)
+        if next_argument is None:
+            usage_error("--mode needs a value.")
+        MODE = next_argument
+    elif argument.startswith("--mode="):
+        MODE = argument.split("=", 1)[1]
+    elif argument == "--intensity":
+        next_argument = next(arguments, None)
+        if next_argument is None:
+            usage_error("--intensity needs a value.")
+        try:
+            INTENSITY = float(next_argument) / 100.0
+        except ValueError:
+            usage_error(f"Not an intensity percentage: {next_argument}")
+    elif argument.startswith("--intensity="):
+        try:
+            INTENSITY = float(argument.split("=", 1)[1]) / 100.0
+        except ValueError:
+            usage_error(f"Not an intensity percentage: {argument}")
+    elif argument.startswith("-"):
+        usage_error(f"Unknown option: {argument}")
+    else:
+        positional.append(argument)
+
+if MODE not in ("always", "empty"):
+    usage_error("Mode must be always or empty.")
+if not 0.0 <= INTENSITY <= 2.0:
+    usage_error("Intensity must be between 0 and 200.")
+
+try:
+    SECONDS = float(positional[0]) if positional else 10.0
+except ValueError:
+    sys.exit(f"Not a number of seconds: {positional[0]}")
+STYLE = positional[1] if len(positional) > 1 else "edgeGlow"
+if STYLE not in ("edgeGlow", "pill"):
+    sys.exit("Style must be edgeGlow or pill.")
+INDICATOR = os.environ.get(
+    "SUPERWHISPER_INDICATOR", "/opt/superwhisper/bin/superwhisper-indicator"
+)
+APP_DIR = os.environ.get("SUPERWHISPER_APP_DIR") or os.path.dirname(
+    os.path.dirname(os.path.abspath(INDICATOR))
+)
+BARS = 24          # cava bars captured; every 4 become one of the six waves
+WAVES = 6
+FPS = 60
+
+for tool in ("hyprctl", "cava", "unshare"):
+    if not shutil.which(tool):
+        sys.exit(f"Missing {tool}. Install it first.")
+if not os.path.exists(INDICATOR):
+    sys.exit(f"Cannot find Superwhisper's indicator at {INDICATOR}")
+
+if not (os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and os.environ.get("WAYLAND_DISPLAY")):
+    sys.exit("Run this inside Hyprland (it needs the compositor's Wayland socket).")
+
+runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+ipc_dir = os.path.join(runtime, "hypr", os.environ["HYPRLAND_INSTANCE_SIGNATURE"])
+if not os.path.exists(os.path.join(ipc_dir, ".socket.sock")):
+    sys.exit(f"Cannot find Hyprland's IPC socket in {ipc_dir}")
+
+# A full-screen "window" on the focused monitor. Superwhisper puts its glow
+# along the bottom edge of the active window, so this lands at the screen edge.
+monitors = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"]))
+monitor = next((m for m in monitors if m.get("focused")), monitors[0])
+scale = monitor.get("scale") or 1
+mx, my = monitor["x"], monitor["y"]
+w, h = monitor["width"], monitor["height"]
+if monitor.get("transform") in (1, 3, 5, 7):  # 90 or 270 degrees
+    w, h = h, w
+mw, mh = round(w / scale), round(h / scale)
+fake_window = {
+    "address": "0xabc",
+    "mapped": True,
+    "hidden": False,
+    "visible": True,
+    "acceptsInput": True,
+    "at": [mx, my],
+    "size": [mw, mh],
+    "workspace": {"id": 1, "name": "1"},
+    "floating": False,
+    "monitor": monitor["id"],
+    "class": "desktop-preview",
+    "title": "desktop-preview",
+    "initialClass": "desktop-preview",
+    "initialTitle": "desktop-preview",
+    "pid": 1,
+    "xwayland": False,
+    "pinned": False,
+    "pinFullscreened": False,
+    "fullscreen": 0,
+    "fullscreenClient": 0,
+    "grouped": [],
+    "tags": [],
+    "swallowing": "0x0",
+    "focusHistoryID": 0,
+    "inhibitingIdle": False,
+}
+try:
+    rounding = subprocess.check_output(
+        ["hyprctl", "-j", "getoption", "decoration:rounding"]
+    )
+except (OSError, subprocess.CalledProcessError):
+    rounding = b'{"option": "decoration:rounding", "int": 8, "set": true }'
+responses = {
+    "j/activewindow": json.dumps(fake_window).encode(),
+    "j/monitors": json.dumps(monitors).encode(),
+    "j/getoption decoration:rounding": rounding,
+}
+
+
+def serve(path, event_stream):
+    """Answer the indicator's Hyprland IPC queries from a fake socket."""
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(path)
+    server.listen(64)
+
+    def handle_event(conn):
+        try:
+            conn.sendall(b"activewindow>>desktop-preview,desktop-preview\n")
+            while conn.recv(4096):
+                pass
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+    while True:
+        conn, _ = server.accept()
+        if event_stream:
+            threading.Thread(target=handle_event, args=(conn,), daemon=True).start()
+            continue
+        try:
+            # Hyprland answers after the first read; waiting for EOF makes the
+            # client time out and retry.
+            command = conn.recv(4096).decode(errors="replace").strip()
+            conn.sendall(responses.get(command, b"{}"))
+        except OSError:
+            pass
+        finally:
+            conn.close()
+
+
+fake_dir = tempfile.mkdtemp(prefix="superwhisper-glow-preview-")
+threading.Thread(
+    target=serve, args=(os.path.join(fake_dir, ".socket.sock"), False), daemon=True
+).start()
+threading.Thread(
+    target=serve, args=(os.path.join(fake_dir, ".socket2.sock"), True), daemon=True
+).start()
+
+# In a private mount namespace, point Hyprland's IPC sockets at the fake ones.
+# The Wayland connection below still goes to the real compositor.
+launcher = [
+    "unshare",
+    "-Urm",
+    "sh",
+    "-c",
+    'mount --make-rprivate /; '
+    'mount --bind "$1/.socket.sock" "$2/.socket.sock"; '
+    'mount --bind "$1/.socket2.sock" "$2/.socket2.sock"; '
+    'exec "$3"',
+    "sh",
+    fake_dir,
+    ipc_dir,
+    INDICATOR,
+]
+
+env = dict(os.environ, SUPERWHISPER_APP_DIR=APP_DIR)
+indicator = subprocess.Popen(
+    launcher,
+    stdin=subprocess.PIPE,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    env=env,
+    start_new_session=True,
+)
+
+# Cava's raw output is BARS bytes per frame, lowest frequency first.
+try:
+    sink = subprocess.check_output(["pactl", "get-default-sink"], text=True).strip()
+except (OSError, subprocess.CalledProcessError):
+    sink = ""
+source = f"{sink}.monitor" if sink else "auto"
+cava_config = os.path.join(fake_dir, "cava.conf")
+with open(cava_config, "w") as conf:
+    conf.write(
+        f"""[general]
+bars = {BARS}
+framerate = {FPS}
+
+[input]
+method = pulse
+source = {source}
+
+[output]
+method = raw
+raw_target = /dev/stdout
+data_format = binary
+bit_format = 8bit
+channels = mono
+"""
+    )
+cava = subprocess.Popen(
+    ["cava", "-p", cava_config],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.DEVNULL,
+    start_new_session=True,
+)
+
+
+def stop(proc):
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+
+def on_signal(signum, frame):
+    raise SystemExit(0)
+
+
+for sig in (signal.SIGTERM, signal.SIGHUP):
+    signal.signal(sig, on_signal)
+
+
+def workspace_is_empty():
+    """True when the monitor the glow sits on has no windows on its workspace."""
+    try:
+        mons = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"]))
+        clients = json.loads(subprocess.check_output(["hyprctl", "-j", "clients"]))
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return True  # can't tell, so don't hide
+    mon = next((m for m in mons if m.get("id") == monitor["id"]), None)
+    if mon is None:
+        return True
+    ws = mon.get("activeWorkspace") or {}
+    wsid, wsname = ws.get("id"), ws.get("name") or ""
+    special = wsname.startswith("special")
+    for client in clients:
+        cws = client.get("workspace") or {}
+        if special:
+            if cws.get("name") == wsname:
+                return False
+        elif cws.get("id") == wsid:
+            return False
+    return True
+
+
+def send(state):
+    """Write one state. False means the indicator is gone."""
+    try:
+        indicator.stdin.write((json.dumps(state) + "\n").encode())
+        indicator.stdin.flush()
+        return True
+    except (BrokenPipeError, OSError):
+        print("The indicator exited unexpectedly.", file=sys.stderr)
+        return False
+
+
+try:
+    deadline = time.monotonic() + SECONDS if SECONDS > 0 else None
+    frame_index = 0
+    shown = True if MODE == "always" else None
+    checked = 0.0
+
+    while deadline is None or time.monotonic() < deadline:
+        frame = cava.stdout.read(BARS)
+        if not frame:
+            print("cava exited unexpectedly.", file=sys.stderr)
+            break
+        frame_index += 1
+        # 60 cava frames a second is more than the indicator needs.
+        if frame_index % 2:
+            continue
+
+        if MODE == "empty":
+            now = time.monotonic()
+            if now - checked >= 0.3:
+                checked = now
+                empty = workspace_is_empty()
+                if empty != shown:
+                    shown = empty
+                    if os.environ.get("SW_PREVIEW_DEBUG"):
+                        print(f"shown={shown}", file=sys.stderr)
+                    if not shown and not send({"visible": False}):
+                        break
+        else:
+            shown = True
+
+        if not shown:
+            continue
+
+        # Every 4 cava bars become one wave: bass on the left, treble on the
+        # right. Cava has already applied its FFT, gravity and smoothing.
+        levels = [
+            min(1.0, max(frame[i * (BARS // WAVES) : (i + 1) * (BARS // WAVES)])
+                / 255.0 * INTENSITY)
+            for i in range(WAVES)
+        ]
+        waveform = [round(2.0 + 16.0 * level, 2) for level in levels]
+        state = {
+            "visible": True,
+            "phase": "recording",
+            "style": "recording",
+            "indicatorStyle": STYLE,
+            "title": "Recording",
+            "waveform": waveform,
+            "level": round(min(1.0, sum(frame) / len(frame) / 255.0 * INTENSITY), 3),
+            "bass": round(max(levels[0], levels[1]), 3),
+        }
+        if not send(state):
+            break
+
+        if os.environ.get("SW_PREVIEW_DEBUG"):
+            print(
+                "waves=" + ",".join(f"{level:.2f}" for level in levels),
+                file=sys.stderr,
+            )
+finally:
+    stop(cava)
+    stop(indicator)
+    shutil.rmtree(fake_dir, ignore_errors=True)
