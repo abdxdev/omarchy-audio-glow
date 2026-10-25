@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.abdxdev.edge-glow",
-  "name": "Edge Glow",
+  "id": "io.github.abdxdev.audio-glow",
+  "name": "Audio Glow",
   "version": "0.1.0",
   "author": "abdxdev",
   "license": "MIT",
-  "description": "Shows Superwhisper's recording glow along the bottom of the screen, driven by what is playing on the default speaker output. Never opens the microphone.",
+  "description": "Speaker-driven glow reacting to default speaker output.",
   "kinds": [
     "service",
     "bar-widget"
@@ -15,8 +15,8 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Edge Glow",
-    "description": "Toggle the speaker-driven recording glow, show it always or only on empty workspaces, and set its intensity.",
+    "displayName": "Audio Glow",
+    "description": "Speaker-driven glow with workspace/media/intensity controls.",
     "category": "System",
     "allowMultiple": false,
     "defaultSection": "right"

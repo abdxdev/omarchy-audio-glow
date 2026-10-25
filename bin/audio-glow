@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Show Superwhisper's recording indicator on the desktop, driven by sound.
+"""Show a glow indicator on the desktop, driven by sound.
 
 Runs a throwaway indicator process and feeds it the speaker's audio, so no
 microphone is opened and no dictation is transcribed or pasted. The six waves
@@ -9,7 +9,7 @@ bars individually. The glow is drawn along the bottom of the focused monitor,
 and only while that monitor's workspace has no windows, whether or not a window
 is open anywhere else.
 
-Needs Hyprland, cava, and Superwhisper. The glows are placed by faking
+Needs Hyprland, cava, and superwhisper-like. The glows are placed by faking
 Hyprland's active window in a private user/mount namespace, so unprivileged
 user namespaces must be enabled.
 
@@ -96,9 +96,9 @@ FPS = 60
 
 for tool in ("hyprctl", "cava", "unshare"):
     if not shutil.which(tool):
-        sys.exit(f"Missing {tool}. Install it first.")
+        sys.exit(f"Missing {tool}. Install it first using pacman -S {tool}.")
 if not os.path.exists(INDICATOR):
-    sys.exit(f"Cannot find Superwhisper's indicator at {INDICATOR}")
+    sys.exit(f"Cannot find superwhisper-like's indicator at {INDICATOR}")
 
 if not (os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and os.environ.get("WAYLAND_DISPLAY")):
     sys.exit("Run this inside Hyprland (it needs the compositor's Wayland socket).")
@@ -108,7 +108,7 @@ ipc_dir = os.path.join(runtime, "hypr", os.environ["HYPRLAND_INSTANCE_SIGNATURE"
 if not os.path.exists(os.path.join(ipc_dir, ".socket.sock")):
     sys.exit(f"Cannot find Hyprland's IPC socket in {ipc_dir}")
 
-# A full-screen "window" on the focused monitor. Superwhisper puts its glow
+# A full-screen "window" on the focused monitor. superwhisper-like puts its glow
 # along the bottom edge of the active window, so this lands at the screen edge.
 monitors = json.loads(subprocess.check_output(["hyprctl", "-j", "monitors"]))
 monitor = next((m for m in monitors if m.get("focused")), monitors[0])

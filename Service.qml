@@ -1,10 +1,11 @@
 import QtQuick
 import Quickshell
 import Quickshell.Io
+import Quickshell.Services.Mpris
 
-// Runs the speaker-driven Superwhisper glow preview and owns its settings.
+// Runs the speaker-driven glow preview and owns its settings.
 // The widget talks to this instance directly; status is also reachable over
-// IPC: qs ipc call abdxdev.edge-glow status
+// IPC: qs ipc call abdxdev.audio-glow status
 Item {
   id: root
 
@@ -22,13 +23,14 @@ Item {
     : home + "/.config/omarchy/plugins/io.github.abdxdev.edge-glow"
   // The preview ships inside the plugin, so enabling it does not depend on
   // anything having been installed into ~/.local/bin.
-  readonly property string bundledScript: pluginDir + "/bin/superwhisper-glow-preview-speaker"
+  readonly property string bundledScript: pluginDir + "/bin/audio-glow"
   readonly property string scriptPath: Quickshell.env("SUPERWHISPER_GLOW_PREVIEW")
     || bundledScript
 
   // Desired state, persisted between sessions.
   property bool enabled: true
   property string mode: "empty"
+  property bool mediaOnly: false
   property int intensity: 100
 
   property bool ready: false
@@ -38,6 +40,15 @@ Item {
   property string lastError: ""
 
   readonly property bool running: preview.running
+  readonly property var mediaPlayers: Mpris.players ? Mpris.players.values : []
+  readonly property bool mediaDetected: {
+    for (var i = 0; i < mediaPlayers.length; i++) {
+      var player = mediaPlayers[i]
+      if (player && (player.trackTitle || player.trackArtist)) return true
+    }
+    return false
+  }
+  readonly property bool shouldRun: enabled
 
   function normalisedMode(value) {
     return String(value) === "always" ? "always" : "empty"
@@ -54,7 +65,9 @@ Item {
       enabled: enabled,
       running: running,
       mode: mode,
+      mediaOnly: mediaOnly,
       intensity: intensity,
+      mediaDetected: mediaDetected,
       script: scriptPath,
       error: lastError
     }
@@ -71,6 +84,11 @@ Item {
 
   function setMode(value) {
     mode = normalisedMode(value)
+    return status()
+  }
+
+  function setMediaOnly(value) {
+    mediaOnly = !!value
     return status()
   }
 
@@ -94,6 +112,7 @@ Item {
     }
     enabled = typeof parsed.enabled === "boolean" ? parsed.enabled : true
     mode = normalisedMode(parsed.mode)
+    mediaOnly = typeof parsed.mediaOnly === "boolean" ? parsed.mediaOnly : false
     intensity = normalisedIntensity(
       parsed.intensity === undefined ? 100 : parsed.intensity)
     loading = false
@@ -106,6 +125,7 @@ Item {
     store.setText(JSON.stringify({
       enabled: enabled,
       mode: mode,
+      mediaOnly: mediaOnly,
       intensity: intensity
     }) + "\n")
   }
@@ -123,14 +143,14 @@ Item {
   }
 
   function launch() {
-    if (!ready || !enabled) return
+    if (!ready || !shouldRun) return
     lastError = ""
     preview.command = [
       scriptPath,
       "0",
       "edgeGlow",
       "--mode",
-      mode,
+      mode === "empty" ? "empty" : "always",
       "--intensity",
       String(intensity)
     ]
@@ -139,7 +159,7 @@ Item {
 
   function applyNow() {
     if (!ready) return
-    if (!enabled) {
+    if (!shouldRun) {
       stopPreview()
       return
     }
@@ -162,10 +182,15 @@ Item {
     scheduleSave()
     applyNow()
   }
+  onMediaOnlyChanged: if (!loading) {
+    scheduleSave()
+    applyNow()
+  }
   onIntensityChanged: if (!loading) {
     scheduleSave()
     applyNow()
   }
+  onMediaDetectedChanged: applyNow()
 
   Component.onCompleted: {
     mkdir.running = true
@@ -198,7 +223,7 @@ Item {
     command: ["/usr/bin/test", "-x", root.scriptPath]
 
     onExited: function(exitCode) {
-      if (!root.enabled) return
+      if (!root.shouldRun) return
       if (exitCode !== 0) {
         root.lastError = "Preview script not found: " + root.scriptPath
         return
@@ -225,11 +250,11 @@ Item {
         root.stopping = false
         if (root.pendingRestart) {
           root.pendingRestart = false
-          if (root.enabled) checkScript.running = true
+          if (root.shouldRun) checkScript.running = true
         }
         return
       }
-      if (!root.enabled) return
+      if (!root.shouldRun) return
       if (root.lastError === "")
         root.lastError = "Preview stopped unexpectedly (exit code " + exitCode + ")"
     }
@@ -244,7 +269,7 @@ Item {
 
   IpcHandler {
     enabled: root.ipcEnabled
-    target: "abdxdev.edge-glow"
+    target: "abdxdev.audio-glow"
 
     function status(): string {
       return root.status()
@@ -268,6 +293,18 @@ Item {
 
     function showOnEmpty(): string {
       return root.setMode("empty")
+    }
+
+    function setMediaOnly(value: bool): string {
+      return root.setMediaOnly(value)
+    }
+
+    function enableMediaOnly(): string {
+      return root.setMediaOnly(true)
+    }
+
+    function disableMediaOnly(): string {
+      return root.setMediaOnly(false)
     }
 
     function brighter(): string {

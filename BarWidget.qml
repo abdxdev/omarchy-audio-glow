@@ -6,12 +6,14 @@ import qs.Ui
 BarWidget {
   id: root
 
-  moduleName: "io.github.abdxdev.edge-glow"
+  moduleName: "io.github.abdxdev.audio-glow"
 
-  readonly property string serviceId: "io.github.abdxdev.edge-glow"
+  readonly property string serviceId: "io.github.abdxdev.audio-glow"
   readonly property var glow: serviceSource.service
   readonly property bool glowEnabled: glow ? !!glow.enabled : false
   readonly property bool glowRunning: glow ? !!glow.running : false
+  readonly property bool glowMediaDetected: glow ? !!glow.mediaDetected : false
+  readonly property bool glowMediaOnly: glow ? !!glow.mediaOnly : false
   readonly property string glowMode: glow ? String(glow.mode) : "empty"
   readonly property int glowIntensity: glow ? Number(glow.intensity) : 100
   readonly property string glowError: glow ? String(glow.lastError || "") : ""
@@ -26,15 +28,14 @@ BarWidget {
   readonly property string heroMeta: {
     if (!glow) return "UNAVAILABLE"
     if (!glowEnabled) return "PREVIEW OFF"
+    if (glowMediaOnly && !glowMediaDetected) return "WAITING FOR MEDIA"
     if (!glowRunning) return "STARTING…"
-    return (glowMode === "always" ? "ALWAYS" : "ONLY WHEN EMPTY")
+    var modeLabel = glowMode === "always" ? "ALWAYS" : "ONLY WHEN EMPTY"
+    return modeLabel
+      + (glowMediaOnly ? " · MEDIA" : "")
       + " · " + glowIntensity + "%"
   }
-  readonly property string tooltip: glow === null
-    ? "Edge Glow unavailable"
-    : (root.glowEnabled
-      ? "Edge Glow — right-click to turn off"
-      : "Edge Glow — right-click to turn on")
+  readonly property string tooltip: glow === null ? "Audio Glow" : "Audio Glow"
 
   property bool panelOpen: false
 
@@ -149,7 +150,7 @@ BarWidget {
               spacing: Style.space(2)
 
               Text {
-                text: "Edge Glow"
+                text: "Audio Glow"
                 textFormat: Text.PlainText
                 color: root.foreground
                 font.family: root.fontFamily
@@ -181,13 +182,7 @@ BarWidget {
               anchors.verticalCenter: parent.verticalCenter
               onToggled: if (root.glow) root.glow.enabled = !root.glowEnabled
 
-              PanelToolTip {
-                visible: powerSwitch.containsMouse
-                text: root.glowEnabled
-                  ? "Turn the preview off"
-                  : "Turn the preview on"
-                fontFamily: root.fontFamily
-              }
+
             }
           }
 
@@ -238,6 +233,46 @@ BarWidget {
                   width: modeRow.cellWidth
                 }
               }
+            }
+          }
+
+          // ---------- Media detection ----------
+          PanelSeparator {
+            foreground: root.foreground
+          }
+
+          Row {
+            width: parent.width
+            spacing: Style.space(12)
+
+            Column {
+              width: parent.width - mediaSwitch.implicitWidth - Style.space(12)
+              spacing: Style.space(2)
+
+              PanelSectionHeader {
+                text: "MEDIA"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              Text {
+                width: parent.width
+                text: "Only when media playing"
+                textFormat: Text.PlainText
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+            }
+
+            ToggleSwitch {
+              id: mediaSwitch
+
+              checked: root.glowMediaOnly
+              foreground: root.foreground
+              anchors.verticalCenter: parent.verticalCenter
+              onToggled: if (root.glow) root.glow.mediaOnly = !root.glowMediaOnly
             }
           }
 
