@@ -17,10 +17,10 @@ Item {
   readonly property string stateHome: Quickshell.env("XDG_STATE_HOME")
     || (home + "/.local/state")
   readonly property string stateDir: stateHome + "/omarchy"
-  readonly property string statePath: stateDir + "/edge-glow.json"
+  readonly property string statePath: stateDir + "/audio-glow.json"
   readonly property string pluginDir: manifest && manifest.__sourceDir
     ? String(manifest.__sourceDir)
-    : home + "/.config/omarchy/plugins/io.github.abdxdev.edge-glow"
+    : home + "/.config/omarchy/plugins/io.github.abdxdev.audio-glow"
   // The preview ships inside the plugin, so enabling it does not depend on
   // anything having been installed into ~/.local/bin.
   readonly property string bundledScript: pluginDir + "/bin/audio-glow"
@@ -148,7 +148,7 @@ Item {
     preview.command = [
       scriptPath,
       "0",
-      "edgeGlow",
+      "audioGlow",
       "--mode",
       mode === "empty" ? "empty" : "always",
       "--intensity",

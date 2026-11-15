@@ -4,16 +4,16 @@
 Runs a throwaway indicator process and feeds it the speaker's audio, so no
 microphone is opened and no dictation is transcribed or pasted. The six waves
 come from cava's frequency bars, so they follow the music's spectrum instead of
-a single loudness level. edgeGlow shows their combined energy; pill draws the
+a single loudness level. audioGlow shows their combined energy; pill draws the
 bars individually. The glow is drawn along the bottom of the focused monitor,
 and only while that monitor's workspace has no windows, whether or not a window
 is open anywhere else.
 
-Needs Hyprland, cava, and superwhisper-like. The glows are placed by faking
-Hyprland's active window in a private user/mount namespace, so unprivileged
-user namespaces must be enabled.
+Needs Hyprland, cava, and the AUR package superwhisper-bin, which provides
+the indicator. The glows are placed by faking Hyprland's active window in a
+private user/mount namespace, so unprivileged user namespaces must be enabled.
 
-Usage: superwhisper-glow-preview-speaker [seconds] [edgeGlow|pill]
+Usage: superwhisper-glow-preview-speaker [seconds] [audioGlow|pill]
                                         [--mode always|empty] [--intensity PERCENT]
        superwhisper-glow-preview-speaker 0            # until Ctrl+C
 
@@ -35,7 +35,7 @@ import time
 
 def usage_error(message):
     sys.exit(f"{message}\n\nUsage: superwhisper-glow-preview-speaker"
-             " [seconds] [edgeGlow|pill] [--mode always|empty]"
+             " [seconds] [audioGlow|pill] [--mode always|empty]"
              " [--intensity PERCENT]")
 
 
@@ -81,9 +81,9 @@ try:
     SECONDS = float(positional[0]) if positional else 10.0
 except ValueError:
     sys.exit(f"Not a number of seconds: {positional[0]}")
-STYLE = positional[1] if len(positional) > 1 else "edgeGlow"
-if STYLE not in ("edgeGlow", "pill"):
-    sys.exit("Style must be edgeGlow or pill.")
+STYLE = positional[1] if len(positional) > 1 else "audioGlow"
+if STYLE not in ("audioGlow", "pill"):
+    sys.exit("Style must be audioGlow or pill.")
 INDICATOR = os.environ.get(
     "SUPERWHISPER_INDICATOR", "/opt/superwhisper/bin/superwhisper-indicator"
 )
@@ -94,11 +94,21 @@ BARS = 24          # cava bars captured; every 4 become one of the six waves
 WAVES = 6
 FPS = 60
 
-for tool in ("hyprctl", "cava", "unshare"):
-    if not shutil.which(tool):
-        sys.exit(f"Missing {tool}. Install it first using pacman -S {tool}.")
-if not os.path.exists(INDICATOR):
-    sys.exit(f"Cannot find superwhisper-like's indicator at {INDICATOR}")
+TOOLS = {"hyprctl": "hyprland", "cava": "cava", "unshare": "util-linux"}
+for command, package in TOOLS.items():
+    if not shutil.which(command):
+        sys.exit(f"Missing {command}. Install it with pacman -S {package}.")
+
+if not os.access(INDICATOR, os.X_OK):
+    sys.exit(f"Cannot run Superwhisper's indicator at {INDICATOR}. "
+             "Install it with yay -S superwhisper-bin, or set "
+             "SUPERWHISPER_INDICATOR to its path.")
+
+if subprocess.run(["unshare", "-U", "true"],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL).returncode != 0:
+    sys.exit("Unprivileged user namespaces are disabled; "
+             "the glow needs them to place the indicator.")
 
 if not (os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and os.environ.get("WAYLAND_DISPLAY")):
     sys.exit("Run this inside Hyprland (it needs the compositor's Wayland socket).")
